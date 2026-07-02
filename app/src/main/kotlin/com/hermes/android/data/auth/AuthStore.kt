@@ -4,8 +4,6 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
-// Secure credential storage — port of Hermex KeychainStore.swift
-// Uses EncryptedSharedPreferences (Android equivalent of iOS Keychain)
 class AuthStore(context: Context) {
 
     private val prefs = EncryptedSharedPreferences.create(

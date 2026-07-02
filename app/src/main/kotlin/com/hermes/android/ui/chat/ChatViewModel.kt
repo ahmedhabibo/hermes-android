@@ -1,25 +1,34 @@
 package com.hermes.android.ui.chat
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.hermes.android.data.auth.AuthStore
-import com.hermes.android.data.models.SSEEvent
-import com.hermes.android.data.models.ChatStartResponse
-import com.hermes.android.data.networking.ApiClient
-import com.hermes.android.data.networking.SSEClient
-import com.hermes.android.data.networking.ApiError
 import com.hermes.android.HermesApp
+import com.hermes.android.data.auth.AuthStore
+import com.hermes.android.data.models.ChatStartResponse
+import com.hermes.android.data.models.SSEEvent
+import com.hermes.android.data.models.SessionDetail
+import com.hermes.android.data.networking.ApiClient
+import com.hermes.android.data.networking.ApiError
+import com.hermes.android.data.networking.SSEClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.io.FileOutputStream
 
 data class ChatMessage(
     val id: String = "",
     val role: String = "",
     val content: String = "",
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    val attachments: List<String> = emptyList()
 )
 
 data class ChatState(
@@ -28,7 +37,9 @@ data class ChatState(
     val isSending: Boolean = false,
     val isStreaming: Boolean = false,
     val error: String? = null,
-    val sessionTitle: String = ""
+    val sessionTitle: String = "",
+    val selectedModel: String = "",
+    val pendingAttachments: List<Uri> = emptyList()
 )
 
 class ChatViewModel : ViewModel() {
@@ -41,28 +52,100 @@ class ChatViewModel : ViewModel() {
         if (url != null) ApiClient(url, HermesApp.instance.httpClient) else null
     }
     private var sseClient: SSEClient? = null
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
 
     fun loadSession(sessionId: String) {
-        val client = apiClient ?: return
-        viewModelScope.launch {
-            try {
-                val detail = client.getSession(sessionId, includeMessages = true, messageLimit = 50)
-                _state.update { it.copy(sessionTitle = detail.title.ifBlank { "Chat" }) }
-                // Would parse messages here if server returns them as structured data
-            } catch (e: Exception) {
-                // Silent fail on load
+            val client = apiClient ?: return
+            viewModelScope.launch {
+                try {
+                    val detail = client.getSession(sessionId, includeMessages = true, messageLimit = 50)
+                    _state.update { it.copy(sessionTitle = detail.title.ifBlank { "Chat" }) }
+
+                    // Parse messages from JSON strings
+                    val messages = detail.messages.mapNotNull { msgJson ->
+                        try {
+                            if (msgJson.isBlank()) return@mapNotNull null
+                            val parsed = json.decodeFromString<com.hermes.android.data.models.ChatMessage>(msgJson)
+                            val messageId = if (parsed.messageId.isNotBlank()) parsed.messageId else {
+                                val role = parsed.role.ifBlank { "unknown" }
+                                val timestamp = if (parsed.timestamp > 0L) parsed.timestamp.toLong() else System.currentTimeMillis()
+                                "$role-$timestamp"
+                            }
+                            ChatMessage(
+                                id = messageId,
+                                role = parsed.role,
+                                content = parsed.content,
+                                isStreaming = false,
+                                attachments = parsed.attachments
+                            )
+                        } catch (e: Exception) {
+                            // If it's not a valid JSON, treat as a plain text message from an unknown role
+                            if (msgJson.isNotBlank()) {
+                                ChatMessage(
+                                    id = "msg-${System.currentTimeMillis()}",
+                                    role = "unknown",
+                                    content = msgJson,
+                                    isStreaming = false,
+                                    attachments = emptyList()
+                                )
+                            } else null
+                        }
+                    }
+                    _state.update { it.copy(messages = messages) }
+                } catch (e: Exception) {
+                    _state.update { it.copy(error = "Failed to load session: ${e.message}") }
+                }
             }
         }
-    }
 
     fun updateInput(text: String) {
         _state.update { it.copy(inputText = text) }
     }
 
+    fun updateModel(model: String) {
+        _state.update { it.copy(selectedModel = model) }
+    }
+
+    fun addAttachment(uri: Uri) {
+        _state.update { it.copy(pendingAttachments = it.pendingAttachments + uri) }
+    }
+
+    fun removeAttachment(uri: Uri) {
+        _state.update { it.copy(pendingAttachments = it.pendingAttachments - uri) }
+    }
+
+    private suspend fun uriToTempFile(context: Context, uri: Uri): File? = withContext(Dispatchers.IO) {
+        try {
+            val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext null
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            val displayName = cursor?.use {
+                val nameIdx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                it.moveToFirst()
+                if (nameIdx >= 0) it.getString(nameIdx) else "upload_${System.currentTimeMillis()}"
+            } ?: "upload_${System.currentTimeMillis()}"
+            cursor?.close()
+
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+            val ext = when {
+                mimeType.contains("jpeg") || mimeType.contains("jpg") -> ".jpg"
+                mimeType.contains("png") -> ".png"
+                mimeType.contains("pdf") -> ".pdf"
+                else -> ""
+            }
+            val tempFile = File(context.cacheDir, "$displayName$ext")
+            FileOutputStream(tempFile).use { out -> inputStream.copyTo(out) }
+            inputStream.close()
+            tempFile
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun sendMessage(sessionId: String) {
         val client = apiClient ?: return
         val message = _state.value.inputText.trim()
-        if (message.isEmpty() || _state.value.isSending) return
+        if (message.isEmpty() && _state.value.pendingAttachments.isEmpty()) return
+        if (_state.value.isSending) return
 
         viewModelScope.launch {
             _state.update {
@@ -74,25 +157,42 @@ class ChatViewModel : ViewModel() {
                     messages = it.messages + ChatMessage(
                         id = "user-${System.currentTimeMillis()}",
                         role = "user",
-                        content = message
+                        content = message,
+                        attachments = _state.value.pendingAttachments.map { it.toString() }
                     )
                 )
             }
 
             try {
-                // Start chat
+                // Upload attachments first
+                val uploadedPaths = mutableListOf<String>()
+                for (uri in _state.value.pendingAttachments) {
+                    val file = uriToTempFile(HermesApp.instance, uri)
+                    if (file != null) {
+                        try {
+                            val mimeType = HermesApp.instance.contentResolver.getType(uri) ?: "application/octet-stream"
+                            val resp = client.uploadFile(sessionId, file, mimeType)
+                            if (resp.path.isNotEmpty()) uploadedPaths.add(resp.path)
+                        } catch (e: Exception) {
+                            // Skip failed uploads
+                        }
+                    }
+                }
+                _state.update { it.copy(pendingAttachments = emptyList()) }
+
+                // Start chat with uploaded attachments
                 val startResp: ChatStartResponse = client.chatStart(
                     sessionId = sessionId,
-                    message = message
+                    message = message,
+                    model = _state.value.selectedModel.ifBlank { null },
+                    attachments = uploadedPaths.ifEmpty { null }
                 )
 
                 if (startResp.streamId.isNotBlank()) {
-                    // Connect SSE stream
                     val streamUrl = client.streamUrl(startResp.streamId)
                     val sse = SSEClient(HermesApp.instance.httpClient)
                     sseClient = sse
 
-                    // Add placeholder assistant message for streaming
                     val assistantMsgId = "assistant-${System.currentTimeMillis()}"
                     _state.update {
                         it.copy(
@@ -117,14 +217,19 @@ class ChatViewModel : ViewModel() {
                                 }
                             }
                             is SSEEvent.Reasoning -> {
-                                // Could show reasoning in a separate area
+                                _state.update { state ->
+                                    val msgs = state.messages.map {
+                                        if (it.id == assistantMsgId) it.copy(content = it.content + "💭 ${event.text}\n")
+                                        else it
+                                    }
+                                    state.copy(messages = msgs)
+                                }
                             }
                             is SSEEvent.ToolStarted -> {
-                                val toolMsgId = "tool-${System.currentTimeMillis()}"
                                 _state.update { state ->
                                     state.copy(
                                         messages = state.messages + ChatMessage(
-                                            id = toolMsgId,
+                                            id = "tool-start-${System.currentTimeMillis()}",
                                             role = "tool",
                                             content = "🔧 ${event.name ?: "Tool"}: ${event.preview ?: ""}"
                                         )
@@ -132,7 +237,16 @@ class ChatViewModel : ViewModel() {
                                 }
                             }
                             is SSEEvent.ToolCompleted -> {
-                                // Could update tool message with results
+                                val toolMsgId = "tool-done-${System.currentTimeMillis()}"
+                                _state.update { state ->
+                                    state.copy(
+                                        messages = state.messages + ChatMessage(
+                                            id = toolMsgId,
+                                            role = "tool",
+                                            content = "✅ ${event.name ?: "Tool"} completed: ${event.preview ?: ""} ${if (event.isError == true) "❌" else ""}"
+                                        )
+                                    )
+                                }
                             }
                             is SSEEvent.Title -> {
                                 _state.update { it.copy(sessionTitle = event.title ?: it.sessionTitle) }
@@ -167,7 +281,7 @@ class ChatViewModel : ViewModel() {
                                 }
                             }
                             is SSEEvent.InterimAssistant -> {
-                                // Refers to already-streamed content
+                                // Refers to already-streamed content — no action needed
                             }
                             is SSEEvent.Ignored -> {}
                         }
@@ -176,7 +290,7 @@ class ChatViewModel : ViewModel() {
                     _state.update { it.copy(isSending = false, isStreaming = false, error = "No stream ID received") }
                 }
             } catch (e: ApiError.Http) {
-                _state.update { it.copy(isSending = false, isStreaming = false, error = "HTTP ${e.statusCode}") }
+                _state.update { it.copy(isSending = false, isStreaming = false, error = "HTTP ${e.statusCode}: ${e.body?.take(100)}") }
             } catch (e: ApiError.Network) {
                 _state.update { it.copy(isSending = false, isStreaming = false, error = "Network: ${e.underlying.message}") }
             } catch (e: Exception) {

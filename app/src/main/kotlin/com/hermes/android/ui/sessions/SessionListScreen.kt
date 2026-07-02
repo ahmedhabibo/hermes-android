@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,10 +23,14 @@ import java.util.Locale
 @Composable
 fun SessionListScreen(
     onSessionClick: (String) -> Unit,
-    onNewSession: (String) -> Unit
+    onNewSession: (String) -> Unit,
+    onDisconnect: () -> Unit,
+    onNavigateToMemory: () -> Unit
 ) {
     val viewModel: SessionListViewModel = viewModel()
     val state by viewModel.state.collectAsState()
+    var showMenu by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf<SessionSummary?>(null) }
 
     Scaffold(
         topBar = {
@@ -35,6 +40,19 @@ fun SessionListScreen(
                     IconButton(onClick = { viewModel.refresh() }) {
                         Text("⟳", style = MaterialTheme.typography.headlineSmall)
                     }
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Memory") },
+                                                onClick = { showMenu = false; onNavigateToMemory() }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Disconnect") },
+                                                onClick = { showMenu = false; onDisconnect() }
+                                            )
+                                        }
                 }
             )
         },
@@ -50,102 +68,98 @@ fun SessionListScreen(
             .fillMaxSize()
             .padding(padding)
         ) {
-            if (state.isLoading && state.sessions.isEmpty()) {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            } else if (state.error != null && state.sessions.isEmpty()) {
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = state.error!!,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                    Button(onClick = { viewModel.refresh() }) {
-                        Text("Retry")
+            when {
+                state.isLoading && state.sessions.isEmpty() -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.error != null && state.sessions.isEmpty() -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(state.error!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+                        Button(onClick = { viewModel.refresh() }) { Text("Retry") }
                     }
                 }
-            } else if (state.sessions.isEmpty()) {
-                Text(
-                    text = "No sessions yet.\nTap + to start a new conversation.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = 8.dp)
-                ) {
-                    items(state.sessions, key = { it.id }) { session ->
-                        SessionRow(session = session, onClick = { onSessionClick(session.id) })
-                        HorizontalDivider()
+                state.sessions.isEmpty() -> {
+                    Text(
+                        "No sessions yet.\nTap + to start a new conversation.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        items(state.sessions, key = { it.id }) { session ->
+                            SessionRow(
+                                session = session,
+                                onClick = { onSessionClick(session.id) },
+                                onRename = { showRenameDialog = session },
+                                onDelete = { viewModel.deleteSession(session.id) },
+                                onPin = { viewModel.pinSession(session.id, !session.pinned) },
+                                onArchive = { viewModel.archiveSession(session.id, !session.archived) }
+                            )
+                            HorizontalDivider()
+                        }
                     }
                 }
             }
         }
     }
+
+    showRenameDialog?.let { session ->
+        var newTitle by remember { mutableStateOf(session.title) }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = null },
+            title = { Text("Rename session") },
+            text = {
+                OutlinedTextField(value = newTitle, onValueChange = { newTitle = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = { TextButton(onClick = { viewModel.renameSession(session.id, newTitle); showRenameDialog = null }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { showRenameDialog = null }) { Text("Cancel") } }
+        )
+    }
 }
 
 @Composable
-private fun SessionRow(session: SessionSummary, onClick: () -> Unit) {
+private fun SessionRow(
+    session: SessionSummary,
+    onClick: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onPin: () -> Unit,
+    onArchive: () -> Unit
+) {
     val dateFormat = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
     val timeStr = if (session.updatedAt > 0) dateFormat.format(Date(session.updatedAt.toLong() * 1000)) else ""
+    var showRowMenu by remember { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (session.pinned) {
-            Text("📌", modifier = Modifier.padding(end = 8.dp))
-        }
+        if (session.pinned) Text("📌", modifier = Modifier.padding(end = 8.dp))
+        if (session.archived) Text("📦", modifier = Modifier.padding(end = 4.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = session.title.ifBlank { "Untitled" },
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 4.dp)
-            ) {
-                if (session.model.isNotEmpty()) {
-                    Text(
-                        text = session.model,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (session.messageCount > 0) {
-                    Text(
-                        text = "${session.messageCount} msgs",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (timeStr.isNotEmpty()) {
-                    Text(
-                        text = timeStr,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            Text(session.title.ifBlank { "Untitled" }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                if (session.model.isNotEmpty()) Text(session.model, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (session.messageCount > 0) Text("${session.messageCount} msgs", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (timeStr.isNotEmpty()) Text(timeStr, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        if (session.isStreaming) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(16.dp),
-                strokeWidth = 2.dp
-            )
+        if (session.isStreaming) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        IconButton(onClick = { showRowMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Options") }
+        DropdownMenu(expanded = showRowMenu, onDismissRequest = { showRowMenu = false }) {
+            DropdownMenuItem(text = { Text("Rename") }, onClick = { showRowMenu = false; onRename() })
+            DropdownMenuItem(text = { Text(if (session.pinned) "Unpin" else "Pin") }, onClick = { showRowMenu = false; onPin() })
+            DropdownMenuItem(text = { Text(if (session.archived) "Unarchive" else "Archive") }, onClick = { showRowMenu = false; onArchive() })
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, onClick = { showRowMenu = false; onDelete() })
         }
     }
 }

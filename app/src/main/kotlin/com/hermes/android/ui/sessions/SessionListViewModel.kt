@@ -73,4 +73,72 @@ class SessionListViewModel : ViewModel() {
             }
         }
     }
+
+    fun renameSession(sessionId: String, newTitle: String) {
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true) }
+            try {
+                val resp: SessionMutationResponse = client.renameSession(sessionId, newTitle)
+                if (resp.ok) {
+                    refresh()
+                } else {
+                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to rename session" }) }
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+            }
+        }
+    }
+
+    fun deleteSession(sessionId: String) {
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true) }
+            try {
+                val resp: SessionMutationResponse = client.deleteSession(sessionId)
+                if (resp.ok) {
+                    refresh()
+                } else {
+                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to delete session" }) }
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+            }
+        }
+    }
+
+    fun pinSession(sessionId: String, pinned: Boolean) {
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true) }
+            try {
+                val resp: SessionMutationResponse = client.pinSession(sessionId, pinned)
+                if (resp.ok) {
+                    refresh()
+                } else {
+                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to pin session" }) }
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+            }
+        }
+    }
+
+    fun archiveSession(sessionId: String, archived: Boolean) {
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true) }
+            try {
+                val resp: SessionMutationResponse = client.archiveSession(sessionId, archived)
+                if (resp.ok) {
+                    refresh()
+                } else {
+                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to archive session" }) }
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+            }
+        }
+    }
 }

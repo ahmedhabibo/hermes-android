@@ -20,7 +20,8 @@ data class OnboardingState(
     val isLoading: Boolean = false,
     val healthCheck: Boolean? = null,
     val error: String? = null,
-    val urlError: String? = null
+    val urlError: String? = null,
+    val isLoggedIn: Boolean = false
 )
 
 class OnboardingViewModel : ViewModel() {
@@ -30,8 +31,12 @@ class OnboardingViewModel : ViewModel() {
     private val authStore = AuthStore(HermesApp.instance)
 
     init {
-        // Pre-fill from saved credentials
-        authStore.serverUrl?.let { savedUrl -> _state.update { state -> state.copy(serverUrl = savedUrl) } }
+        authStore.serverUrl?.let { savedUrl ->
+            _state.update { state -> state.copy(serverUrl = savedUrl) }
+        }
+        if (authStore.isLoggedIn && authStore.serverUrl != null) {
+            _state.update { it.copy(isLoggedIn = true) }
+        }
     }
 
     fun updateServerUrl(url: String) {
@@ -49,7 +54,6 @@ class OnboardingViewModel : ViewModel() {
             return
         }
 
-        // Basic validation
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             _state.update { it.copy(urlError = "URL must start with http:// or https://") }
             return
@@ -61,7 +65,6 @@ class OnboardingViewModel : ViewModel() {
             val client = ApiClient(url, HermesApp.instance.httpClient)
 
             try {
-                // Step 1: Health check
                 val health: HealthResponse = client.health()
                 if (health.status != "ok") {
                     _state.update { it.copy(isLoading = false, error = "Server health check failed: status=${health.status}") }
@@ -69,7 +72,6 @@ class OnboardingViewModel : ViewModel() {
                 }
                 _state.update { it.copy(healthCheck = true) }
 
-                // Step 2: Login (if server has password configured)
                 val password = state.value.password
                 if (password.isNotEmpty()) {
                     val loginResp: LoginResponse = client.login(password)
@@ -79,7 +81,6 @@ class OnboardingViewModel : ViewModel() {
                     }
                 }
 
-                // Step 3: Save credentials
                 authStore.serverUrl = url
                 if (password.isNotEmpty()) {
                     authStore.password = password
