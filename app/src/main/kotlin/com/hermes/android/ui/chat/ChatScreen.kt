@@ -1,245 +1,231 @@
 package com.hermes.android.ui.chat
 
 import android.content.Context
-import android.net.Uri
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
+import com.hermes.android.data.models.ChatMessage
+import com.hermes.android.data.models.MessageAttachment
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    sessionId: String,
-    onBack: () -> Unit,
-    viewModel: ChatViewModel = viewModel()
+    viewModel: ChatViewModel,
+    onSessionClick: (String) -> Unit,
+    onBack: () -> Unit
 ) {
+    val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    val state by viewModel.state.collectAsState()
     val listState = rememberLazyListState()
-    val snackbarHostState = remember { SnackbarHostState() }
-    var showModelPicker by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
-    val attachmentLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let { viewModel.addAttachment(it) }
+    var messageText by remember { mutableStateOf("") }
+    var pendingUris by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris != null && uris.isNotEmpty()) {
+            pendingUris = uris.map { it.toString() }
+        }
     }
 
-    // Auto-scroll to bottom when messages change
+    // Auto-scroll to bottom on new messages
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.lastIndex)
         }
     }
 
-    // Show error snackbar
-    LaunchedEffect(state.error) {
-        state.error?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                actionLabel = "Dismiss",
-                duration = SnackbarDuration.Short
-            )
-        }
+    // Load session messages + models on init
+    LaunchedEffect(Unit) {
+        viewModel.loadMessages()
+        viewModel.loadModels()
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = {
-                    Text(
-                        text = state.sessionTitle.ifBlank { "Chat" },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                title = {
+                    Column {
+                        Text(
+                            text = state.title.ifBlank { "Chat" },
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (state.modelName.isNotBlank()) {
+                            Text(
+                                text = state.modelName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
                     }
                 },
                 actions = {
-                    // Model picker
-                    if (state.availableModels.isNotEmpty()) {
-                        TextButton(onClick = { showModelPicker = true }) {
+                    // Model picker dropdown
+                    var modelMenuExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        TextButton(onClick = { modelMenuExpanded = true }) {
                             Text(
-                                text = state.selectedModel.take(12),
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                text = state.selectedModel ?: "Model",
+                                style = MaterialTheme.typography.labelMedium
                             )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                         }
                         DropdownMenu(
-                            expanded = showModelPicker,
-                            onDismissRequest = { showModelPicker = false }
+                            expanded = modelMenuExpanded,
+                            onDismissRequest = { modelMenuExpanded = false }
                         ) {
-                            state.availableModels.forEach { model ->
+                            state.models.forEach { model ->
                                 DropdownMenuItem(
-                                    text = { Text(model) },
+                                    text = { Text("${model.name} (${model.id})") },
                                     onClick = {
-                                        viewModel.updateModel(model)
-                                        showModelPicker = false
+                                        viewModel.selectModel(model.id)
+                                        modelMenuExpanded = false
                                     }
                                 )
                             }
                         }
                     }
-                    // Attach button
-                    IconButton(
-                        onClick = { attachmentLauncher.launch("*/*") },
-                        enabled = !state.isSending
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Attach file")
+                    IconButton(onClick = { onSessionClick(state.sessionId) }) {
+                        Icon(Icons.Default.Info, contentDescription = "Session info")
                     }
                 }
+            )
+        },
+        bottomBar = {
+            ChatInputBar(
+                text = messageText,
+                onTextChange = { messageText = it },
+                onSend = {
+                    if (messageText.isNotBlank() || pendingUris.isNotEmpty()) {
+                        viewModel.sendMessage(messageText, pendingUris)
+                        messageText = ""
+                        pendingUris = emptyList()
+                    }
+                },
+                onAttach = { imagePicker.launch("image/*") },
+                pendingCount = pendingUris.size
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+        if (state.isLoading && state.messages.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) { CircularProgressIndicator() }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) {
+                items(state.messages, key = { it.id }) { message ->
+                    MessageBubble(message)
+                }
+                if (state.isStreaming) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(message: ChatMessage) {
+    val isUser = message.role == "user"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            color = if (isUser) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.widthIn(max = 320.dp)
         ) {
-            // Messages list
-            if (state.messages.isEmpty() && !state.isSending) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                // Text content
+                if (message.content.isNotBlank()) {
                     Text(
-                        text = "Start a conversation",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
-                ) {
-                    items(
-                        items = state.messages,
-                        key = { it.id }
-                    ) { message ->
-                        when (message.role) {
-                            "user" -> UserMessage(message = message, context = context)
-                            "assistant" -> AssistantMessage(message = message, context = context)
-                            else -> ToolMessage(message = message)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
+
+                // Reasoning
+                if (message.reasoning.isNotBlank()) {
+                    var expanded by remember { mutableStateOf(false) }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Reasoning",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.clickable { expanded = !expanded }
+                    )
+                    if (expanded) {
+                        Text(
+                            text = message.reasoning,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
                     }
                 }
-            }
 
-            // Pending attachments preview
-            if (state.pendingAttachments.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    state.pendingAttachments.forEach { uri ->
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(uri)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = "Pending attachment",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                        )
-                    }
-                    Spacer(modifier = Modifier.weight(1f))
-                    IconButton(onClick = { viewModel.clearAttachments() }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Clear attachments")
-                    }
+                // Image attachments
+                message.attachments.filter { it.isImage }.forEach { attachment ->
+                    Spacer(Modifier.height(8.dp))
+                    AsyncImage(
+                        model = attachment.path,
+                        contentDescription = attachment.name,
+                        modifier = Modifier
+                            .sizeIn(maxHeight = 200.dp, maxWidth = 280.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                    )
                 }
-            }
 
-            // Input bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                OutlinedTextField(
-                    value = state.inputText,
-                    onValueChange = { viewModel.updateInput(it) },
-                    placeholder = { Text("Type a message...") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 5,
-                    shape = RoundedCornerShape(24.dp),
-                    enabled = !state.isSending,
-                    trailingIcon = {
-                        if (state.inputText.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.updateInput("") }) {
-                                Icon(Icons.Filled.Close, contentDescription = "Clear text",
-                                    modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    }
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                FloatingActionButton(
-                    onClick = {
-                        viewModel.sendMessage(sessionId)
-                        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                        imm.hideSoftInputFromWindow(
-                            (context as? android.app.Activity)?.currentFocus?.windowToken,
-                            0
-                        )
-                    },
-                    modifier = Modifier.size(48.dp),
-                    containerColor = MaterialTheme.colorScheme.primary
-                ) {
-                    if (state.isSending) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
+                // Non-image attachments
+                message.attachments.filterNot { it.isImage }.forEach { attachment ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "📎 ${attachment.name}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
@@ -247,111 +233,47 @@ fun ChatScreen(
 }
 
 @Composable
-fun UserMessage(message: ChatMessage, context: android.content.Context) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.End
-    ) {
-        // Render image attachments
-        message.attachments.forEach { att ->
-            if (att.startsWith("content://") || att.startsWith("file://") || att.startsWith("http")) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(att)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = "Attachment",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .sizeIn(maxWidth = 200.dp, maxHeight = 200.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .padding(bottom = 4.dp)
-                )
-            }
-        }
-        // Text bubble
-        if (message.content.isNotBlank()) {
-            Surface(
-                color = MaterialTheme.colorScheme.primary,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.widthIn(max = 280.dp)
-            ) {
+private fun ChatInputBar(
+    text: String,
+    onTextChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onAttach: () -> Unit,
+    pendingCount: Int
+) {
+    Surface(tonalElevation = 2.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (pendingCount > 0) {
                 Text(
-                    text = message.content,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    text = "📎 $pendingCount",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(end = 4.dp)
                 )
             }
-        }
-    }
-}
-
-@Composable
-fun AssistantMessage(message: ChatMessage, context: android.content.Context) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.Start
-    ) {
-        // Render image attachments
-        message.attachments.forEach { att ->
-            if (att.startsWith("content://") || att.startsWith("file://") || att.startsWith("http")) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(att)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = "Attachment",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .sizeIn(maxWidth = 200.dp, maxHeight = 200.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .padding(bottom = 4.dp)
-                )
+            IconButton(onClick = onAttach) {
+                Icon(Icons.Default.Add, contentDescription = "Attach image")
             }
-        }
-        // Text bubble with markdown
-        if (message.content.isNotBlank()) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.widthIn(max = 280.dp)
-            ) {
-                MarkdownText(
-                    text = message.content,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                )
-            }
-        }
-        if (message.isStreaming && message.content.isBlank()) {
-            CircularProgressIndicator(
-                modifier = Modifier
-                    .size(16.dp)
-                    .padding(8.dp),
-                strokeWidth = 2.dp
+            OutlinedTextField(
+                value = text,
+                onValueChange = onTextChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Send a message…") },
+                maxLines = 4,
+                shape = RoundedCornerShape(24.dp)
             )
+            IconButton(onClick = onSend, enabled = text.isNotBlank() || pendingCount > 0) {
+                Icon(
+                    Icons.Default.Send,
+                    contentDescription = "Send",
+                    tint = if (text.isNotBlank() || pendingCount > 0)
+                        MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline
+                )
+            }
         }
-    }
-}
-
-@Composable
-fun ToolMessage(message: ChatMessage) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp)
-    ) {
-        Text(
-            text = message.content,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
     }
 }

@@ -3,11 +3,9 @@ package com.hermes.android.ui.onboarding
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.data.auth.AuthStore
-import com.hermes.android.data.models.HealthResponse
-import com.hermes.android.data.models.LoginResponse
+import com.hermes.android.HermesApp
 import com.hermes.android.data.networking.ApiClient
 import com.hermes.android.data.networking.ApiError
-import com.hermes.android.HermesApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,7 +16,6 @@ data class OnboardingState(
     val serverUrl: String = "",
     val password: String = "",
     val isLoading: Boolean = false,
-    val healthCheck: Boolean? = null,
     val error: String? = null,
     val urlError: String? = null,
     val isLoggedIn: Boolean = false
@@ -40,7 +37,7 @@ class OnboardingViewModel : ViewModel() {
     }
 
     fun updateServerUrl(url: String) {
-        _state.update { it.copy(serverUrl = url, urlError = null, error = null, healthCheck = null) }
+        _state.update { it.copy(serverUrl = url, urlError = null, error = null) }
     }
 
     fun updatePassword(pwd: String) {
@@ -60,25 +57,23 @@ class OnboardingViewModel : ViewModel() {
         }
 
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true, error = null, healthCheck = null) }
+            _state.update { it.copy(isLoading = true, error = null) }
 
             val client = ApiClient(url, HermesApp.instance.httpClient)
 
             try {
-                val health: HealthResponse = client.health()
-                if (health.status != "ok") {
-                    _state.update { it.copy(isLoading = false, error = "Server health check failed: status=${health.status}") }
-                    return@launch
-                }
-                _state.update { it.copy(healthCheck = true) }
-
                 val password = state.value.password
                 if (password.isNotEmpty()) {
-                    val loginResp: LoginResponse = client.login(password)
-                    if (!loginResp.ok) {
-                        _state.update { it.copy(isLoading = false, error = loginResp.error.ifBlank { "Login failed" }) }
-                        return@launch
-                    }
+                    // POST /auth/password-login
+                    client.passwordLogin("admin", password)
+                }
+
+                // Verify auth with GET /api/auth/me
+                try {
+                    client.authMe()
+                } catch (e: ApiError.Unauthorized) {
+                    _state.update { it.copy(isLoading = false, error = "Login failed — check password") }
+                    return@launch
                 }
 
                 authStore.serverUrl = url

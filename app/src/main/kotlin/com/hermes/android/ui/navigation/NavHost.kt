@@ -7,10 +7,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import com.hermes.android.HermesApp
 import com.hermes.android.data.auth.AuthStore
+import com.hermes.android.data.networking.ApiClient
 import com.hermes.android.ui.chat.ChatScreen
+import com.hermes.android.ui.chat.ChatViewModel
 import com.hermes.android.ui.memory.MemoryViewerScreen
 import com.hermes.android.ui.onboarding.OnboardingScreen
 import com.hermes.android.ui.sessions.SessionListScreen
+import com.hermes.android.ui.sessions.SessionListViewModel
 
 object Routes {
     const val ONBOARDING = "onboarding"
@@ -38,26 +41,44 @@ fun HermesNavHost(navController: NavHostController) {
             )
         }
         composable(Routes.SESSIONS) {
-            SessionListScreen(
-                onSessionClick = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
-                onNewSession = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
-                onDisconnect = {
-                    authStore.clear()
-                    navController.navigate(Routes.ONBOARDING) {
-                        popUpTo(Routes.SESSIONS) { inclusive = true }
+            val serverUrl = authStore.serverUrl ?: ""
+            val apiClient = remember(serverUrl) {
+                if (serverUrl.isNotEmpty()) ApiClient(serverUrl, HermesApp.instance.httpClient)
+                else null
+            }
+            if (apiClient != null) {
+                val viewModel = remember { SessionListViewModel(apiClient) }
+                SessionListScreen(
+                    viewModel = viewModel,
+                    onSessionClick = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
+                    onNewSession = {
+                        viewModel.newSession(onCreated = { sessionId ->
+                            navController.navigate(Routes.chat(sessionId))
+                        })
                     }
-                },
-                onNavigateToMemory = {
-                    navController.navigate(Routes.MEMORY)
+                )
+            } else {
+                // No server URL — go back to onboarding
+                navController.navigate(Routes.ONBOARDING) {
+                    popUpTo(Routes.SESSIONS) { inclusive = true }
                 }
-            )
+            }
         }
         composable(Routes.CHAT) { backStackEntry ->
             val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
-            ChatScreen(
-                sessionId = sessionId,
-                onBack = { navController.popBackStack() }
-            )
+            val serverUrl = authStore.serverUrl ?: ""
+            val apiClient = remember(serverUrl) {
+                if (serverUrl.isNotEmpty()) ApiClient(serverUrl, HermesApp.instance.httpClient)
+                else null
+            }
+            if (apiClient != null) {
+                val viewModel = remember(sessionId) { ChatViewModel(apiClient, sessionId) }
+                ChatScreen(
+                    viewModel = viewModel,
+                    onSessionClick = { navController.navigate(Routes.MEMORY) },
+                    onBack = { navController.popBackStack() }
+                )
+            }
         }
         composable(Routes.MEMORY) {
             MemoryViewerScreen(onBack = { navController.popBackStack() })

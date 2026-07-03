@@ -3,134 +3,103 @@ package com.hermes.android.ui.sessions
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.android.data.models.SessionSummary
+import com.hermes.android.data.models.SessionsResponse
 import com.hermes.android.data.networking.ApiClient
-import com.hermes.android.HermesApp
-import com.hermes.android.data.auth.AuthStore
+import com.hermes.android.data.networking.ApiError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class SessionListViewModel : ViewModel() {
-    private val authStore = AuthStore(HermesApp.instance)
-    private val apiClient: ApiClient? by lazy {
-        val url = authStore.serverUrl
-        if (url != null) ApiClient(url, HermesApp.instance.httpClient) else null
-    }
+data class SessionListUiState(
+    val sessions: List<SessionSummary> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
 
-    private val _state = MutableStateFlow(SessionListState())
-    val state: StateFlow<SessionListState> = _state.asStateFlow()
+class SessionListViewModel(private val apiClient: ApiClient) : ViewModel() {
 
-    init {
-        loadSessions()
-    }
+    private val _uiState = MutableStateFlow(SessionListUiState())
+    val uiState: StateFlow<SessionListUiState> = _uiState.asStateFlow()
 
-    private fun loadSessions() {
-        val client = apiClient ?: return
-        viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
-            try {
-                val response = client.getSessions()
-                _state.update { it.copy(sessions = response.sessions, isLoading = false, error = null) }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = e.message ?: "Unknown error", isLoading = false) }
-            }
-        }
-    }
+    init { refresh() }
 
     fun refresh() {
-        val client = apiClient ?: return
         viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
             try {
-                val response = client.getSessions()
-                _state.update { it.copy(sessions = response.sessions, error = null) }
+                val response = apiClient.getSessions()
+                _uiState.update { it.copy(sessions = response.sessions, isLoading = false) }
+            } catch (e: ApiError) {
+                _uiState.update { it.copy(isLoading = false, error = e.message) }
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message ?: "Unknown error") }
+                _uiState.update { it.copy(isLoading = false, error = e.message ?: "Unknown error") }
             }
         }
     }
 
-    fun dismissError() {
-        _state.update { it.copy(error = null) }
-    }
-
-    fun newSession(onNewSession: (String) -> Unit) {
-        val client = apiClient ?: return
+    fun newSession(workspace: String? = null, model: String? = null, onCreated: (String) -> Unit = {}) {
         viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
             try {
-                val session = client.newSession()
-                onNewSession(session.sessionId)
-                loadSessions()
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "Failed to create session: ${e.message}") }
-            }
-        }
-    }
-
-    fun deleteSession(sessionId: String) {
-        val client = apiClient ?: return
-        viewModelScope.launch {
-            try {
-                client.deleteSession(sessionId)
-                _state.update { it.copy(sessions = it.sessions.filterNot { s -> s.id == sessionId }) }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "Failed to delete: ${e.message}") }
+                val resp = apiClient.newSession(workspace, model)
+                if (resp.ok && resp.sessionId.isNotBlank()) {
+                    refresh()
+                    onCreated(resp.sessionId)
+                } else {
+                    _uiState.update { it.copy(isLoading = false, error = "Failed to create session") }
+                }
+            } catch (e: ApiError) {
+                _uiState.update { it.copy(isLoading = false, error = e.message) }
             }
         }
     }
 
     fun renameSession(sessionId: String, newTitle: String) {
-        val client = apiClient ?: return
         viewModelScope.launch {
             try {
-                client.renameSession(sessionId, newTitle)
-                _state.update {
-                    it.copy(sessions = it.sessions.map { s ->
-                        if (s.id == sessionId) s.copy(title = newTitle) else s
+                apiClient.renameSession(sessionId, newTitle)
+                _uiState.update { state ->
+                    state.copy(sessions = state.sessions.map {
+                        if (it.sessionId == sessionId) it.copy(title = newTitle) else it
                     })
                 }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "Failed to rename: ${e.message}") }
+            } catch (e: ApiError) {
+                _uiState.update { it.copy(error = "Rename failed: ${e.message}") }
             }
         }
     }
 
-    fun pinSession(sessionId: String, pin: Boolean) {
-        val client = apiClient ?: return
+    fun deleteSession(sessionId: String) {
         viewModelScope.launch {
             try {
-                client.pinSession(sessionId, pin)
-                _state.update {
-                    it.copy(sessions = it.sessions.map { s ->
-                        if (s.id == sessionId) s.copy(pinned = pin) else s
-                    })
+                apiClient.deleteSession(sessionId)
+                _uiState.update { state ->
+                    state.copy(sessions = state.sessions.filter { it.sessionId != sessionId })
                 }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "Failed to pin: ${e.message}") }
+            } catch (e: ApiError) {
+                _uiState.update { it.copy(error = "Delete failed: ${e.message}") }
             }
         }
     }
 
     fun archiveSession(sessionId: String, archive: Boolean) {
-        val client = apiClient ?: return
         viewModelScope.launch {
             try {
-                client.archiveSession(sessionId, archive)
-                _state.update {
-                    it.copy(sessions = it.sessions.map { s ->
-                        if (s.id == sessionId) s.copy(archived = archive) else s
+                apiClient.archiveSession(sessionId, archive)
+                _uiState.update { state ->
+                    state.copy(sessions = state.sessions.map {
+                        if (it.sessionId == sessionId) it.copy(archived = archive) else it
                     })
                 }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "Failed to archive: ${e.message}") }
+            } catch (e: ApiError) {
+                _uiState.update { it.copy(error = "Archive failed: ${e.message}") }
             }
         }
     }
-}
 
-data class SessionListState(
-    val sessions: List<SessionSummary> = emptyList(),
-    val error: String? = null,
-    val isLoading: Boolean = false
-)
+    fun dismissError() {
+        _uiState.update { it.copy(error = null) }
+    }
+}

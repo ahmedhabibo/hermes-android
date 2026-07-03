@@ -93,16 +93,29 @@ fun MemoryViewerScreen(
                         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        if (mem.userProfile.isNotBlank()) {
-                            Text("User Profile", style = MaterialTheme.typography.titleMedium)
-                            Text(mem.userProfile, style = MaterialTheme.typography.bodyMedium)
+                        if (mem.provider.isNotBlank()) {
+                            Text("Active Provider: ${mem.provider}", style = MaterialTheme.typography.titleMedium)
                             HorizontalDivider()
                         }
-                        if (mem.notes.isNotBlank()) {
-                            Text("Notes", style = MaterialTheme.typography.titleMedium)
-                            Text(mem.notes, style = MaterialTheme.typography.bodyMedium)
+                        if (mem.providers.isNotEmpty()) {
+                            Text("Providers", style = MaterialTheme.typography.titleMedium)
+                            mem.providers.forEach { provider ->
+                                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Text(
+                                        "${provider.name} ${if (provider.configured) "✓" else "✗"}",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    if (provider.description.isNotBlank()) {
+                                        Text(
+                                            provider.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
                         }
-                        if (mem.userProfile.isBlank() && mem.notes.isBlank()) {
+                        if (mem.provider.isBlank() && mem.providers.isEmpty()) {
                             Text("No memory data available", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }

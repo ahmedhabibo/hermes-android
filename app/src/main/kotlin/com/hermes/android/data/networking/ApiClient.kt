@@ -21,6 +21,12 @@ val hermesJson = Json {
     encodeDefaults = false
 }
 
+sealed class ApiError(message: String) : Exception(message) {
+    class Network(val underlying: Throwable) : ApiError(underlying.message ?: "Network error")
+    class Http(val statusCode: Int, val body: String?) : ApiError("HTTP $statusCode: ${body?.take(200)}")
+    data object Unauthorized : ApiError("Unauthorized — please reconnect")
+}
+
 class ApiClient(
     private val baseUrl: String,
     private val client: OkHttpClient = HermesApp.instance.httpClient
@@ -28,180 +34,154 @@ class ApiClient(
     private val json = hermesJson
     private val jsonMediaType = "application/json".toMediaType()
 
-    private suspend fun request(endpoint: Endpoint, method: String, body: String? = null): String =
-        withContext(Dispatchers.IO) {
-            suspendCancellableCoroutine { cont ->
-                val url = endpoint.fullUrl(baseUrl)
-                val reqBuilder = Request.Builder().url(url)
-                    .addHeader("Accept", "application/json")
-                    .addHeader("Cache-Control", "no-cache")
+    private suspend fun request(
+        endpoint: Endpoint,
+        method: String,
+        body: String? = null
+    ): String = withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { cont ->
+            val url = endpoint.fullUrl(baseUrl)
+            val reqBuilder = Request.Builder()
+                .url(url)
+                .addHeader("Accept", "application/json")
 
-                val requestBody = when {
-                    method == "GET" -> null
-                    body != null -> RequestBody.create(jsonMediaType, body)
-                    else -> RequestBody.create(jsonMediaType, "")
+            val requestBody = when {
+                method == "GET" || method == "DELETE" -> null
+                body != null -> RequestBody.create(jsonMediaType, body)
+                else -> RequestBody.create(jsonMediaType, "")
+            }
+            reqBuilder.method(method, requestBody)
+
+            client.newCall(reqBuilder.build()).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWithException(ApiError.Network(e))
                 }
 
-                reqBuilder.method(method, requestBody)
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val responseBody = response.body?.string() ?: ""
+                        if (response.code == 401) {
+                            if (cont.isActive) cont.resumeWithException(ApiError.Unauthorized)
+                            return
+                        }
+                        if (response.code !in 200..299) {
+                            if (cont.isActive) cont.resumeWithException(ApiError.Http(response.code, responseBody))
+                            return
+                        }
+                        if (cont.isActive) cont.resume(responseBody)
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resumeWithException(ApiError.Network(e))
+                    }
+                }
+            })
+        }
+    }
 
-                val req = reqBuilder.build()
-                client.newCall(req).enqueue(object : Callback {
+    // ── Auth ──
+    suspend fun passwordLogin(username: String, password: String): String =
+        request(PasswordLogin, "POST", json.encodeToString(PasswordLoginRequest(username, password)))
+
+    suspend fun authMe(): AuthMeResponse =
+        json.decodeFromString(request(AuthMe, "GET"))
+
+    suspend fun authLogout(): AuthLogoutResponse =
+        json.decodeFromString(request(AuthLogout, "POST"))
+
+    // ── Sessions ──
+    suspend fun getSessions(): SessionsResponse =
+        json.decodeFromString(request(Sessions, "GET"))
+
+    suspend fun getSessionMessages(sessionId: String): SessionMessagesResponse =
+        json.decodeFromString(request(SessionMessagesEndpoint(sessionId), "GET"))
+
+    suspend fun newSession(workspace: String? = null, model: String? = null): NewSessionResponse =
+        json.decodeFromString(
+            request(Sessions, "POST", json.encodeToString(NewSessionRequest(workspace, model)))
+        )
+
+    suspend fun renameSession(sessionId: String, title: String): SessionMutationResponse =
+        json.decodeFromString(
+            request(
+                SessionDetailEndpoint(sessionId, includeMessages = false),
+                "PATCH",
+                json.encodeToString(RenameSessionRequest(title = title))
+            )
+        )
+
+    suspend fun deleteSession(sessionId: String): SessionMutationResponse =
+        json.decodeFromString(request(SessionDetailEndpoint(sessionId, false), "DELETE"))
+
+    suspend fun archiveSession(sessionId: String, archive: Boolean): SessionMutationResponse =
+        json.decodeFromString(
+            request(
+                SessionDetailEndpoint(sessionId, false),
+                "PATCH",
+                json.encodeToString(ArchiveSessionRequest(archived = archive))
+            )
+        )
+
+    // ── Models ──
+    suspend fun getModelOptions(): ModelOptionsResponse =
+        json.decodeFromString(request(ModelOptions, "GET"))
+
+    suspend fun getDefaultModel(): DefaultModelResponse =
+        json.decodeFromString(request(DefaultModel, "GET"))
+
+    // ── Memory ──
+    suspend fun getMemory(): MemoryResponse =
+        json.decodeFromString(request(MemoryStatus, "GET"))
+
+    // ── Skills ──
+    suspend fun getSkills(): SkillsResponse =
+        json.decodeFromString(request(SkillsList, "GET"))
+
+    // ── Crons ──
+    suspend fun getCronJobs(): CronsResponse =
+        json.decodeFromString(request(CronJobs, "GET"))
+
+    // ── Upload ──
+    suspend fun uploadFile(sessionId: String, fileName: String, file: java.io.File): UploadResponse =
+        withContext(Dispatchers.IO) {
+            suspendCancellableCoroutine { cont ->
+                val url = FileUpload.fullUrl(baseUrl)
+                val body = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("session_id", sessionId)
+                    .addFormDataPart("file", fileName,
+                        RequestBody.create("application/octet-stream".toMediaType(), file))
+                    .build()
+
+                client.newCall(
+                    Request.Builder().url(url).post(body).build()
+                ).enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
                         if (cont.isActive) cont.resumeWithException(ApiError.Network(e))
                     }
                     override fun onResponse(call: Call, response: Response) {
                         try {
-                            val responseBody = response.body?.string() ?: ""
-                            if (response.code == 401) {
-                                cont.resumeWithException(ApiError.Unauthorized)
-                                return
-                            }
+                            val resp = response.body?.string() ?: ""
                             if (response.code !in 200..299) {
-                                cont.resumeWithException(ApiError.Http(response.code, responseBody))
+                                if (cont.isActive) cont.resumeWithException(
+                                    ApiError.Http(response.code, resp))
                                 return
                             }
-                            cont.resume(responseBody)
+                            if (cont.isActive) cont.resume(json.decodeFromString(resp))
                         } catch (e: Exception) {
                             if (cont.isActive) cont.resumeWithException(ApiError.Network(e))
                         }
                     }
                 })
-
-                cont.invokeOnCancellation { client.dispatcher.cancelAll() }
             }
         }
-
-    private suspend fun get(endpoint: Endpoint): String = request(endpoint, "GET")
-    private suspend fun post(endpoint: Endpoint, body: String? = null): String = request(endpoint, "POST", body)
-
-    // ── Auth & health ──
-    suspend fun health(): HealthResponse =
-        json.decodeFromString(get(Health))
-
-    suspend fun authStatus(): AuthStatusResponse =
-        json.decodeFromString(get(AuthStatus))
-
-    suspend fun login(password: String): LoginResponse =
-        json.decodeFromString(post(Login, json.encodeToString(LoginRequest(password))))
-
-    suspend fun logout(): LoginResponse =
-        json.decodeFromString(post(Logout))
-
-    // ── Sessions ──
-    suspend fun getSessions(): SessionsResponse =
-        json.decodeFromString(get(Sessions))
-
-    suspend fun getSession(id: String, includeMessages: Boolean = true, messageLimit: Int? = 50): SessionDetail =
-        json.decodeFromString(get(SessionDetailEndpoint(id, includeMessages, messageLimit)))
-
-    suspend fun getSessionStatus(id: String): SessionStatusResponse =
-        json.decodeFromString(get(SessionStatus(id)))
-
-    suspend fun newSession(workspace: String? = null, model: String? = null): SessionMutationResponse =
-        json.decodeFromString(post(NewSession, json.encodeToString(NewSessionRequest(workspace, model))))
-
-    suspend fun renameSession(sessionId: String, title: String): SessionMutationResponse =
-        json.decodeFromString(post(RenameSession(sessionId, title), json.encodeToString(RenameSessionRequest(sessionId, title))))
-
-    suspend fun deleteSession(sessionId: String): SessionMutationResponse =
-        json.decodeFromString(post(DeleteSession(sessionId), json.encodeToString(DeleteSessionRequest(sessionId))))
-
-    suspend fun pinSession(sessionId: String, pinned: Boolean): SessionMutationResponse =
-        json.decodeFromString(post(PinSession(sessionId, pinned), json.encodeToString(PinSessionRequest(sessionId, pinned))))
-
-    suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMutationResponse =
-        json.decodeFromString(post(ArchiveSession(sessionId, archived), json.encodeToString(ArchiveSessionRequest(sessionId, archived))))
-
-    suspend fun branchSession(sessionId: String, keepCount: Int? = null, title: String? = null): SessionBranchResponse =
-        json.decodeFromString(post(BranchSession(sessionId, keepCount, title), json.encodeToString(BranchSessionRequest(sessionId, keepCount, title))))
-
-    // ── Chat ──
-    suspend fun chatStart(sessionId: String, message: String, workspace: String? = null, model: String? = null, attachments: List<String>? = null): ChatStartResponse =
-        json.decodeFromString(post(ChatStart, json.encodeToString(ChatStartRequest(sessionId, message, workspace ?: "", model ?: "", attachments ?: emptyList()))))
-
-    suspend fun chatCancel(streamId: String): String = get(ChatCancel(streamId))
-
-    suspend fun chatStreamStatus(streamId: String): String = get(ChatStreamStatus(streamId))
-
-    suspend fun chatSteer(sessionId: String, text: String): String =
-        json.decodeFromString(post(ChatSteer, json.encodeToString(ChatSteerRequest(sessionId, text))))
-
-    // ── Models / providers / profiles ──
-    suspend fun getModels(): ModelsResponse =
-        json.decodeFromString(get(Models))
-
-    suspend fun getProviders(): ProvidersResponse =
-        json.decodeFromString(get(Providers))
-
-    suspend fun getProfiles(): ProfilesResponse =
-        json.decodeFromString(get(Profiles))
-
-    suspend fun getSettings(): ServerSettings =
-        json.decodeFromString(get(Settings))
-
-    suspend fun getReasoning(): ReasoningResponse =
-        json.decodeFromString(get(Reasoning))
-
-    // ── Workspace ──
-    suspend fun getWorkspaces(): WorkspacesResponse =
-        json.decodeFromString(get(Workspaces))
-
-    suspend fun listDirectory(sessionId: String, path: String?): DirectoryListResponse =
-        json.decodeFromString(get(DirectoryList(sessionId, path)))
-
-    suspend fun getFile(sessionId: String, path: String): FileResponse =
-        json.decodeFromString(get(File(sessionId, path)))
-
-    // ── Read-only panels ──
-    suspend fun getCrons(): CronsResponse =
-        json.decodeFromString(get(Crons))
-
-    suspend fun getSkills(): SkillsResponse =
-        json.decodeFromString(get(Skills))
-
-    suspend fun getMemory(): MemoryResponse =
-        json.decodeFromString(get(Memory))
-
-    // ── Upload ──
-    suspend fun uploadFile(sessionId: String, file: java.io.File, mimeType: String): UploadResponse =
-        withContext(Dispatchers.IO) {
-            suspendCancellableCoroutine { cont ->
-                val mediaType = mimeType.toMediaType()
-                val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-                    .addFormDataPart("session_id", sessionId)
-                    .addFormDataPart("file", file.name, RequestBody.create(mediaType, file))
-                    .build()
-
-                val req = Request.Builder()
-                    .url(Upload.fullUrl(baseUrl))
-                    .post(body)
-                    .addHeader("Accept", "application/json")
-                    .build()
-
-                client.newCall(req).enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (cont.isActive) cont.resumeWithException(ApiError.Network(e))
-                    }
-                    override fun onResponse(call: Call, response: Response) {
-                        val responseBody = response.body?.string() ?: ""
-                        if (response.code !in 200..299) {
-                            cont.resumeWithException(ApiError.Http(response.code, responseBody))
-                            return
-                        }
-                        cont.resume(json.decodeFromString(responseBody))
-                    }
-                })
-            }
-        }
-
-    // SSE stream URL
-    fun streamUrl(streamId: String): String = ChatStream(streamId).fullUrl(baseUrl)
 }
 
-// API errors
-sealed class ApiError(message: String) : Exception(message) {
-    class Network(val underlying: Throwable) : ApiError(underlying.message ?: "Network error")
-    class Http(val statusCode: Int, val body: String?) : ApiError("HTTP $statusCode: ${body?.take(200)}")
-    data object Unauthorized : ApiError("Unauthorized — please reconnect")
-    class Decoding(val underlying: Throwable) : ApiError("Decoding error: ${underlying.message}")
+// ── Skill content endpoint ──
+data class SkillContentEndpoint(
+    val name: String,
+    val file: String? = null
+) : Endpoint("/api/skills/content") {
+    override fun queryItems(): List<Pair<String, String>> = buildList {
+        add("name" to name)
+        file?.let { add("file" to it) }
+    }
 }

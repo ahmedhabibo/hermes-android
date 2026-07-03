@@ -85,7 +85,7 @@ fun OnboardingScreen(onConnected: () -> Unit) {
             )
         }
 
-        if (state.healthCheck == true) {
+        if (state.isLoggedIn) {
             Text(
                 text = "✓ Server reachable",
                 color = MaterialTheme.colorScheme.primary,
