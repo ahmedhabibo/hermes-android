@@ -1,53 +1,95 @@
 # Hermes Android
 
-Android companion app for [Hermes Agent](https://github.com/NousResearch/hermes-agent) — connects to any self-hosted `hermes-webui` server.
+A native Android companion app for [Hermes Agent](https://hermes-agent.nousresearch.com) self-hosted WebUI servers.
 
 ## Features
 
-- **Onboarding** — Server URL + password setup with `/health` check
-- **Session List** — Browse, create, and open chat sessions with pull-to-refresh
-- **Chat with SSE Streaming** — Real-time token streaming, tool-call display, cancel support
-- **Secure Storage** — EncryptedSharedPreferences for server credentials
+- **Session management** — Create, rename, pin, archive, and delete chat sessions
+- **Real-time chat** — SSE streaming with token, reasoning, and tool event display
+- **Model picker** — Fetches available models from `/api/models`, selectable per chat
+- **File attachments** — Upload images/files via `/api/upload`, rendered inline with Coil
+- **Search & filter** — Search sessions by title, pinned sessions sorted first
+- **Memory viewer** — View Hermes memory entries from the session list
+- **Auto-login** — Skips onboarding if credentials are already stored
+- **Material 3 UI** — Jetpack Compose with Material 3 theming
 
-## Architecture
+## Screens
 
-```
-app/src/main/kotlin/com/hermes/android/
-├── HermesApp.kt              # Application class (OkHttp + CookieJar)
-├── MainActivity.kt           # Single-activity, Compose Navigation
-├── config/AppConfig.kt       # Constants
-├── data/
-│   ├── auth/AuthStore.kt     # Encrypted credential storage
-│   ├── models/
-│   │   ├── Models.kt         # API request/response models
-│   │   └── SSEEvent.kt      # SSE event types + payloads
-│   └── networking/
-│       ├── Endpoints.kt     # All hermes-webui API endpoints
-│       ├── ApiClient.kt      # REST client (OkHttp + kotlinx.serialization)
-│       └── SSEClient.kt      # SSE streaming client (EventSource)
-└── ui/
-    ├── theme/Theme.kt        # Material3 theme
-    ├── navigation/NavHost.kt # Compose Navigation graph
-    ├── onboarding/           # Server connection screen
-    ├── sessions/             # Session list screen
-    └── chat/                 # Chat screen with SSE streaming
-```
+| Screen | Description |
+|--------|-------------|
+| Onboarding | Enter server URL + password to connect |
+| Sessions | List of chat sessions with search, refresh, overflow menu |
+| Chat | Streaming chat with model picker, file attach, image rendering |
+| Memory | View Hermes agent memory entries |
 
-## Building
+## Tech Stack
+
+- **Language**: Kotlin
+- **UI**: Jetpack Compose + Material 3
+- **Networking**: OkHttp 4.x (REST + SSE)
+- **Serialization**: kotlinx.serialization
+- **Image Loading**: Coil 2.5.0
+- **Navigation**: Compose Navigation
+- **Min SDK**: 24 (Android 7.0)
+- **Target SDK**: 35
+
+## Build
+
+### Prerequisites
+
+- JDK 17
+- Android SDK (commandline-tools)
+- Gradle (or use the included wrapper)
+
+### Debug Build
 
 ```bash
-# Requires JDK 17, Android SDK 35, Gradle 8.9
 export JAVA_HOME=/path/to/jdk17
 export ANDROID_HOME=/path/to/android/sdk
 ./gradlew assembleDebug
 ```
 
-Output: `app/build/outputs/apk/debug/app-debug.apk`
+APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
-## API Compatibility
+### Release Build
 
-Port of the Hermex iOS app's API contract — compatible with `hermes-webui` endpoints:
-- Auth: `/health`, `/api/auth/status`, `/api/auth/login`, `/api/auth/logout`
-- Sessions: CRUD, search, branch, pin, archive
-- Chat: `/api/chat/start`, SSE `/api/chat/stream`, cancel, steer
-- Panels: models, providers, profiles, crons, skills, memory
+```bash
+./gradlew assembleRelease
+```
+
+## Architecture
+
+```
+app/src/main/kotlin/com/hermes/android/
+├── HermesApp.kt              # Application class, OkHttpClient singleton
+├── MainActivity.kt            # Single-activity entry point
+├── data/
+│   ├── auth/AuthStore.kt      # Credential storage (encrypted)
+│   ├── models/                # Data classes (sessions, chat, SSE events)
+│   └── networking/
+│       ├── ApiClient.kt       # REST API client (all endpoints)
+│       ├── SSEClient.kt       # Server-Sent Events streaming client
+│       └── Endpoints.kt       # API endpoint definitions
+└── ui/
+    ├── chat/                  # Chat screen + ViewModel
+    ├── sessions/              # Session list + ViewModel
+    ├── onboarding/            # Server login screen
+    ├── memory/                # Memory viewer screen
+    ├── navigation/NavHost.kt  # Compose Navigation routes
+    └── theme/                 # Material 3 theme
+```
+
+## Connecting to a Hermes Server
+
+1. Install and run Hermes WebUI on your server
+2. Open the app and enter the server URL (e.g., `https://my-server.com:3000`)
+3. Enter the WebUI password
+4. The app will authenticate and show your sessions
+
+## CI
+
+GitHub Actions workflow (`.github/workflows/build.yml`) runs `assembleDebug` on every push.
+
+## License
+
+MIT

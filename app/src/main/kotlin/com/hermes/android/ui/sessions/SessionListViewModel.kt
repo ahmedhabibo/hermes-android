@@ -22,9 +22,6 @@ class SessionListViewModel : ViewModel() {
     private val _state = MutableStateFlow(SessionListState())
     val state: StateFlow<SessionListState> = _state.asStateFlow()
 
-    private val _refreshing = MutableStateFlow(false)
-    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
-
     init {
         loadSessions()
     }
@@ -35,7 +32,7 @@ class SessionListViewModel : ViewModel() {
             _state.update { it.copy(isLoading = true) }
             try {
                 val response = client.getSessions()
-                _state.update { it.copy(sessions = response.sessions, isLoading = false) }
+                _state.update { it.copy(sessions = response.sessions, isLoading = false, error = null) }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Unknown error", isLoading = false) }
             }
@@ -45,16 +42,17 @@ class SessionListViewModel : ViewModel() {
     fun refresh() {
         val client = apiClient ?: return
         viewModelScope.launch {
-            _refreshing.value = true
             try {
                 val response = client.getSessions()
                 _state.update { it.copy(sessions = response.sessions, error = null) }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Unknown error") }
-            } finally {
-                _refreshing.value = false
             }
         }
+    }
+
+    fun dismissError() {
+        _state.update { it.copy(error = null) }
     }
 
     fun newSession(onNewSession: (String) -> Unit) {
@@ -65,7 +63,7 @@ class SessionListViewModel : ViewModel() {
                 onNewSession(session.sessionId)
                 loadSessions()
             } catch (e: Exception) {
-                // TODO: handle error
+                _state.update { it.copy(error = "Failed to create session: ${e.message}") }
             }
         }
     }
@@ -75,9 +73,9 @@ class SessionListViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 client.deleteSession(sessionId)
-                loadSessions()
+                _state.update { it.copy(sessions = it.sessions.filterNot { s -> s.id == sessionId }) }
             } catch (e: Exception) {
-                // TODO: handle error
+                _state.update { it.copy(error = "Failed to delete: ${e.message}") }
             }
         }
     }
@@ -87,9 +85,13 @@ class SessionListViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 client.renameSession(sessionId, newTitle)
-                loadSessions()
+                _state.update {
+                    it.copy(sessions = it.sessions.map { s ->
+                        if (s.id == sessionId) s.copy(title = newTitle) else s
+                    })
+                }
             } catch (e: Exception) {
-                // TODO: handle error
+                _state.update { it.copy(error = "Failed to rename: ${e.message}") }
             }
         }
     }
@@ -99,9 +101,13 @@ class SessionListViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 client.pinSession(sessionId, pin)
-                loadSessions()
+                _state.update {
+                    it.copy(sessions = it.sessions.map { s ->
+                        if (s.id == sessionId) s.copy(pinned = pin) else s
+                    })
+                }
             } catch (e: Exception) {
-                // TODO: handle error
+                _state.update { it.copy(error = "Failed to pin: ${e.message}") }
             }
         }
     }
@@ -111,9 +117,13 @@ class SessionListViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 client.archiveSession(sessionId, archive)
-                loadSessions()
+                _state.update {
+                    it.copy(sessions = it.sessions.map { s ->
+                        if (s.id == sessionId) s.copy(archived = archive) else s
+                    })
+                }
             } catch (e: Exception) {
-                // TODO: handle error
+                _state.update { it.copy(error = "Failed to archive: ${e.message}") }
             }
         }
     }

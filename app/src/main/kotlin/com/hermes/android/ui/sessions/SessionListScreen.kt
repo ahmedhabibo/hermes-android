@@ -6,12 +6,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -30,40 +34,93 @@ fun SessionListScreen(
 ) {
     val viewModel: SessionListViewModel = viewModel()
     val state by viewModel.state.collectAsState()
-    val refreshing by viewModel.refreshing.collectAsState()
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf<SessionSummary?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var isSearching by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Error snackbar
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(
+                message = it,
+                actionLabel = "Dismiss",
+                duration = SnackbarDuration.Short
+            )
+            viewModel.dismissError()
+        }
+    }
+
+    // Filter + sort: pinned first, then by updatedAt desc, filter by query
+    val visibleSessions = remember(state.sessions, searchQuery) {
+        state.sessions
+            .filter { searchQuery.isEmpty() || it.title.contains(searchQuery, ignoreCase = true) }
+            .sortedWith(compareByDescending<SessionSummary> { it.pinned }.thenByDescending { it.updatedAt })
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = { Text("Sessions") },
-                actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More")
-                    }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Memory") },
-                            onClick = { showMenu = false; onNavigateToMemory() }
+            if (isSearching) {
+                TopAppBar(
+                    title = {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search sessions...") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        DropdownMenuItem(
-                            text = { Text("Disconnect") },
-                            onClick = { showMenu = false; onDisconnect() }
-                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { isSearching = false; searchQuery = "" }) {
+                            Icon(Icons.Filled.Clear, contentDescription = "Close search")
+                        }
+                    },
+                    actions = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Filled.Clear, contentDescription = "Clear")
+                            }
+                        }
                     }
-                }
-            )
+                )
+            } else {
+                TopAppBar(
+                    title = { Text("Sessions") },
+                    actions = {
+                        IconButton(onClick = { isSearching = true }) {
+                            Icon(Icons.Filled.Search, contentDescription = "Search")
+                        }
+                        IconButton(onClick = { viewModel.refresh() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Memory") },
+                                onClick = { showMenu = false; onNavigateToMemory() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Disconnect") },
+                                onClick = { showMenu = false; onDisconnect() }
+                            )
+                        }
+                    }
+                )
+            }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { viewModel.newSession(onNewSession) },
-                icon = { Icon(Icons.Default.Add, contentDescription = "New session") },
-                text = { Text("New") }
-            )
+            if (!isSearching) {
+                ExtendedFloatingActionButton(
+                    onClick = { viewModel.newSession(onNewSession) },
+                    icon = { Icon(Icons.Default.Add, contentDescription = "New session") },
+                    text = { Text("New") }
+                )
+            }
         }
     ) { padding ->
         Box(
@@ -89,20 +146,21 @@ fun SessionListScreen(
                         Button(onClick = { viewModel.refresh() }) { Text("Retry") }
                     }
                 }
-                state.sessions.isEmpty() -> {
+                visibleSessions.isEmpty() -> {
                     Text(
-                        text = "No sessions yet.\nTap + to start a new conversation.",
+                        text = if (searchQuery.isNotEmpty())
+                            "No sessions match \"$searchQuery\""
+                        else
+                            "No sessions yet.\nTap + to start a new conversation.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.Center)
                     )
                 }
                 else -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize()
-                    ) {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(
-                            items = state.sessions,
+                            items = visibleSessions,
                             key = { it.id }
                         ) { session ->
                             SessionRow(
@@ -117,15 +175,6 @@ fun SessionListScreen(
                         }
                     }
                 }
-            }
-
-            // Refresh overlay
-            if (refreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 8.dp)
-                )
             }
         }
     }
@@ -176,8 +225,8 @@ private fun SessionRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (session.pinned) Text("\ud83d\udccc", modifier = Modifier.padding(end = 8.dp))
-        if (session.archived) Text("\ud83d\udce6", modifier = Modifier.padding(end = 4.dp))
+        if (session.pinned) Text("\uD83D\uDCCC", modifier = Modifier.padding(end = 8.dp))
+        if (session.archived) Text("\uD83D\uDCE6", modifier = Modifier.padding(end = 4.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = session.title.ifBlank { "Untitled" },

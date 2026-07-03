@@ -314,17 +314,15 @@ fun AssistantMessage(message: ChatMessage, context: android.content.Context) {
                 )
             }
         }
-        // Text bubble
+        // Text bubble with markdown
         if (message.content.isNotBlank()) {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.widthIn(max = 280.dp)
             ) {
-                Text(
+                MarkdownText(
                     text = message.content,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                 )
             }

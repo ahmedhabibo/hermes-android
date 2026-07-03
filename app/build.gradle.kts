@@ -1,8 +1,18 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Load keystore properties if available
+val keystorePropertiesFile = rootProject.file("keystore/secrets.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -22,6 +32,17 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystoreProperties.isNotEmpty()) {
+                keyAlias = keystoreProperties["KEY_ALIAS"] as String
+                keyPassword = keystoreProperties["KEY_PASSWORD"] as String
+                storeFile = file(keystoreProperties["KEYSTORE_PATH"] as String)
+                storePassword = keystoreProperties["KEYSTORE_PASSWORD"] as String
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -37,6 +58,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only apply signing if keystore is configured
+            if (keystoreProperties.isNotEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
@@ -58,8 +83,8 @@ dependencies {
     implementation("androidx.compose.ui:ui:1.6.0")
     implementation("androidx.compose.ui:ui-graphics:1.6.0")
     implementation("androidx.compose.ui:ui-tooling-preview:1.6.0")
-    implementation("androidx.compose.material3:material3:1.2.0")
-    implementation("androidx.compose.foundation:foundation:1.6.0") // Added this line
+    implementation("androidx.compose.material3:material3:1.3.1")
+    implementation("androidx.compose.foundation:foundation:1.6.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.0")
