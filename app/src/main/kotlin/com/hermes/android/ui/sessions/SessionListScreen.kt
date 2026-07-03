@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +30,7 @@ fun SessionListScreen(
 ) {
     val viewModel: SessionListViewModel = viewModel()
     val state by viewModel.state.collectAsState()
+    val refreshing by viewModel.refreshing.collectAsState()
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf<SessionSummary?>(null) }
 
@@ -38,21 +40,21 @@ fun SessionListScreen(
                 title = { Text("Sessions") },
                 actions = {
                     IconButton(onClick = { viewModel.refresh() }) {
-                        Text("⟳", style = MaterialTheme.typography.headlineSmall)
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                                            DropdownMenuItem(
-                                                text = { Text("Memory") },
-                                                onClick = { showMenu = false; onNavigateToMemory() }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("Disconnect") },
-                                                onClick = { showMenu = false; onDisconnect() }
-                                            )
-                                        }
+                        DropdownMenuItem(
+                            text = { Text("Memory") },
+                            onClick = { showMenu = false; onNavigateToMemory() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Disconnect") },
+                            onClick = { showMenu = false; onDisconnect() }
+                        )
+                    }
                 }
             )
         },
@@ -64,9 +66,10 @@ fun SessionListScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
         ) {
             when {
                 state.isLoading && state.sessions.isEmpty() -> {
@@ -77,13 +80,18 @@ fun SessionListScreen(
                         modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(state.error!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+                        Text(
+                            text = state.error ?: "Unknown error",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
                         Button(onClick = { viewModel.refresh() }) { Text("Retry") }
                     }
                 }
                 state.sessions.isEmpty() -> {
                     Text(
-                        "No sessions yet.\nTap + to start a new conversation.",
+                        text = "No sessions yet.\nTap + to start a new conversation.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.Center)
@@ -91,10 +99,12 @@ fun SessionListScreen(
                 }
                 else -> {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        items(state.sessions, key = { it.id }) { session ->
+                        items(
+                            items = state.sessions,
+                            key = { it.id }
+                        ) { session ->
                             SessionRow(
                                 session = session,
                                 onClick = { onSessionClick(session.id) },
@@ -108,6 +118,15 @@ fun SessionListScreen(
                     }
                 }
             }
+
+            // Refresh overlay
+            if (refreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                )
+            }
         }
     }
 
@@ -117,10 +136,22 @@ fun SessionListScreen(
             onDismissRequest = { showRenameDialog = null },
             title = { Text("Rename session") },
             text = {
-                OutlinedTextField(value = newTitle, onValueChange = { newTitle = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = newTitle,
+                    onValueChange = { newTitle = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             },
-            confirmButton = { TextButton(onClick = { viewModel.renameSession(session.id, newTitle); showRenameDialog = null }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { showRenameDialog = null }) { Text("Cancel") } }
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.renameSession(session.id, newTitle)
+                    showRenameDialog = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = null }) { Text("Cancel") }
+            }
         )
     }
 }
@@ -139,27 +170,59 @@ private fun SessionRow(
     var showRowMenu by remember { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (session.pinned) Text("📌", modifier = Modifier.padding(end = 8.dp))
-        if (session.archived) Text("📦", modifier = Modifier.padding(end = 4.dp))
+        if (session.pinned) Text("\ud83d\udccc", modifier = Modifier.padding(end = 8.dp))
+        if (session.archived) Text("\ud83d\udce6", modifier = Modifier.padding(end = 4.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(session.title.ifBlank { "Untitled" }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
-                if (session.model.isNotEmpty()) Text(session.model, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (session.messageCount > 0) Text("${session.messageCount} msgs", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (timeStr.isNotEmpty()) Text(timeStr, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = session.title.ifBlank { "Untitled" },
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 4.dp)
+            ) {
+                if (session.model.isNotEmpty()) Text(
+                    session.model,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (session.messageCount > 0) Text(
+                    "${session.messageCount} msgs",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (timeStr.isNotEmpty()) Text(
+                    timeStr,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
-        if (session.isStreaming) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-        IconButton(onClick = { showRowMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Options") }
+        if (session.isStreaming) CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp
+        )
+        IconButton(onClick = { showRowMenu = true }) {
+            Icon(Icons.Default.MoreVert, contentDescription = "Options")
+        }
         DropdownMenu(expanded = showRowMenu, onDismissRequest = { showRowMenu = false }) {
             DropdownMenuItem(text = { Text("Rename") }, onClick = { showRowMenu = false; onRename() })
             DropdownMenuItem(text = { Text(if (session.pinned) "Unpin" else "Pin") }, onClick = { showRowMenu = false; onPin() })
             DropdownMenuItem(text = { Text(if (session.archived) "Unarchive" else "Archive") }, onClick = { showRowMenu = false; onArchive() })
             HorizontalDivider()
-            DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, onClick = { showRowMenu = false; onDelete() })
+            DropdownMenuItem(
+                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                onClick = { showRowMenu = false; onDelete() }
+            )
         }
     }
 }

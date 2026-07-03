@@ -2,91 +2,70 @@ package com.hermes.android.ui.sessions
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.hermes.android.data.auth.AuthStore
-import com.hermes.android.data.models.SessionMutationResponse
-import com.hermes.android.data.models.SessionsResponse
+import com.hermes.android.data.models.SessionSummary
 import com.hermes.android.data.networking.ApiClient
-import com.hermes.android.data.networking.ApiError
 import com.hermes.android.HermesApp
+import com.hermes.android.data.auth.AuthStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class SessionListState(
-    val sessions: List<com.hermes.android.data.models.SessionSummary> = emptyList(),
-    val isLoading: Boolean = false,
-    val error: String? = null
-)
-
 class SessionListViewModel : ViewModel() {
-    private val _state = MutableStateFlow(SessionListState(isLoading = true))
-    val state: StateFlow<SessionListState> = _state.asStateFlow()
-
     private val authStore = AuthStore(HermesApp.instance)
     private val apiClient: ApiClient? by lazy {
         val url = authStore.serverUrl
         if (url != null) ApiClient(url, HermesApp.instance.httpClient) else null
     }
 
+    private val _state = MutableStateFlow(SessionListState())
+    val state: StateFlow<SessionListState> = _state.asStateFlow()
+
+    private val _refreshing = MutableStateFlow(false)
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
     init {
-        refresh()
+        loadSessions()
+    }
+
+    private fun loadSessions() {
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true) }
+            try {
+                val response = client.getSessions()
+                _state.update { it.copy(sessions = response.sessions, isLoading = false) }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Unknown error", isLoading = false) }
+            }
+        }
     }
 
     fun refresh() {
-        val client = apiClient ?: run {
-            _state.update { it.copy(isLoading = false, error = "Not configured — please reconnect") }
-            return
-        }
-
+        val client = apiClient ?: return
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true, error = null) }
+            _refreshing.value = true
             try {
-                val resp: SessionsResponse = client.getSessions()
-                val sessions = resp.sessions.sortedByDescending { it.updatedAt }
-                _state.update { it.copy(sessions = sessions, isLoading = false) }
-            } catch (e: ApiError.Http) {
-                _state.update { it.copy(isLoading = false, error = "HTTP ${e.statusCode}") }
-            } catch (e: ApiError.Network) {
-                _state.update { it.copy(isLoading = false, error = "Network error: ${e.underlying.message}") }
+                val response = client.getSessions()
+                _state.update { it.copy(sessions = response.sessions, error = null) }
             } catch (e: Exception) {
-                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+                _state.update { it.copy(error = e.message ?: "Unknown error") }
+            } finally {
+                _refreshing.value = false
             }
         }
     }
 
-    fun newSession(onCreated: (String) -> Unit) {
+    fun newSession(onNewSession: (String) -> Unit) {
         val client = apiClient ?: return
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
             try {
-                val resp: SessionMutationResponse = client.newSession()
-                if (resp.ok && resp.sessionId.isNotEmpty()) {
-                    _state.update { it.copy(isLoading = false) }
-                    onCreated(resp.sessionId)
-                } else {
-                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to create session" }) }
-                }
+                val session = client.newSession()
+                onNewSession(session.sessionId)
+                loadSessions()
             } catch (e: Exception) {
-                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
-            }
-        }
-    }
-
-    fun renameSession(sessionId: String, newTitle: String) {
-        val client = apiClient ?: return
-        viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
-            try {
-                val resp: SessionMutationResponse = client.renameSession(sessionId, newTitle)
-                if (resp.ok) {
-                    refresh()
-                } else {
-                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to rename session" }) }
-                }
-            } catch (e: Exception) {
-                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+                // TODO: handle error
             }
         }
     }
@@ -94,51 +73,54 @@ class SessionListViewModel : ViewModel() {
     fun deleteSession(sessionId: String) {
         val client = apiClient ?: return
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
             try {
-                val resp: SessionMutationResponse = client.deleteSession(sessionId)
-                if (resp.ok) {
-                    refresh()
-                } else {
-                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to delete session" }) }
-                }
+                client.deleteSession(sessionId)
+                loadSessions()
             } catch (e: Exception) {
-                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+                // TODO: handle error
             }
         }
     }
 
-    fun pinSession(sessionId: String, pinned: Boolean) {
+    fun renameSession(sessionId: String, newTitle: String) {
         val client = apiClient ?: return
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
             try {
-                val resp: SessionMutationResponse = client.pinSession(sessionId, pinned)
-                if (resp.ok) {
-                    refresh()
-                } else {
-                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to pin session" }) }
-                }
+                client.renameSession(sessionId, newTitle)
+                loadSessions()
             } catch (e: Exception) {
-                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+                // TODO: handle error
             }
         }
     }
 
-    fun archiveSession(sessionId: String, archived: Boolean) {
+    fun pinSession(sessionId: String, pin: Boolean) {
         val client = apiClient ?: return
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
             try {
-                val resp: SessionMutationResponse = client.archiveSession(sessionId, archived)
-                if (resp.ok) {
-                    refresh()
-                } else {
-                    _state.update { it.copy(isLoading = false, error = resp.error.ifBlank { "Failed to archive session" }) }
-                }
+                client.pinSession(sessionId, pin)
+                loadSessions()
             } catch (e: Exception) {
-                _state.update { it.copy(isLoading = false, error = "Error: ${e.message}") }
+                // TODO: handle error
+            }
+        }
+    }
+
+    fun archiveSession(sessionId: String, archive: Boolean) {
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            try {
+                client.archiveSession(sessionId, archive)
+                loadSessions()
+            } catch (e: Exception) {
+                // TODO: handle error
             }
         }
     }
 }
+
+data class SessionListState(
+    val sessions: List<SessionSummary> = emptyList(),
+    val error: String? = null,
+    val isLoading: Boolean = false
+)
