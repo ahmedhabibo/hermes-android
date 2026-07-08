@@ -1,15 +1,16 @@
-name: Build & Publish Release APK
+name: Release Signed APK
 
 on:
   push:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -36,30 +37,31 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Decode keystore
+      - name: Create keystore from base64 secret
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 -d > keystore/hermes-release.jks
-          ls -la keystore/hermes-release.jks
+          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > keystore/hermes-release.jks
+          echo "Keystore created: $(ls -la keystore/hermes-release.jks)"
 
-      - name: Create secrets.properties
+      - name: Create secrets.properties from secrets
         run: |
-          cat > keystore/secrets.properties << SECRETS
+          cat > keystore/secrets.properties << EOF
           KEYSTORE_PATH=../keystore/hermes-release.jks
           KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}
-          SECRETS
+          EOF
+          echo "secrets.properties created"
 
-      - name: Assemble Release APK
+      - name: Assemble release APK
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Verify APK signed
+      - name: Verify APK is signed
         run: |
-          apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          jarsigner -verify -verbose -certs "$APK_PATH" | head -20
 
-      - name: Upload to GitHub Release
+      - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: app/build/outputs/apk/release/app-release.apk
           generate_release_notes: true
