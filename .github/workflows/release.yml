@@ -55,6 +55,9 @@ jobs:
       - name: Assemble release APK
         run: ./gradlew assembleRelease --no-daemon
 
+      - name: Bundle release AAB
+        run: ./gradlew bundleRelease --no-daemon
+
       - name: Verify APK is signed
         run: |
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
@@ -63,7 +66,9 @@ jobs:
       - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/release/app-release.apk
+          files: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/bundle/release/app-release.aab
           generate_release_notes: true
           draft: false
           prerelease: false
